@@ -80,3 +80,17 @@ if MAIN:
     attn_pattern_layer_0_copy = gpt2_cache["blocks.0.attn.hook_pattern"]
     torch.testing.assert_close(attn_pattern_layer_0,attn_pattern_layer_0_copy)
 # %%
+if MAIN:
+    layer0_pattern_from_cache = gpt2_cache["pattern", 0]
+
+    q, k = gpt2_cache["q", 0], gpt2_cache["k", 0]
+    seq, nhead, headsize = q.shape
+    layer0_attn_scores = einops.einsum(q, k, "seqQ n h, seqK n h -> n seqQ seqK")
+    mask = torch.triu(torch.ones((seq, seq), dtype=torch.bool), diagonal=1).to(device)
+    layer0_attn_scores.masked_fill_(mask, -1e9)
+    layer0_pattern_from_q_and_k = (layer0_attn_scores / headsize**0.5).softmax(-1)
+
+
+    torch.testing.assert_close(layer0_pattern_from_cache, layer0_pattern_from_q_and_k)
+    print("Tests passed!")
+# %%
