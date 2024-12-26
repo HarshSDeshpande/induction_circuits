@@ -32,3 +32,51 @@ MAIN = __name__ == "__main__"
 # %%
 gpt2_small: HookedTransformer = HookedTransformer.from_pretrained("gpt2-small")
 # %%
+if MAIN:
+    print("Number of layers: ", gpt2_small.cfg.n_layers)
+    print("Number of attention heads: ", gpt2_small.cfg.n_heads)
+    print("Maximum context window: ", gpt2_small.cfg.n_ctx)
+# %%
+model_input_text = '''Lessgo some of Tyrion's Best Quotes Compiled.
+
+Never forget what you are, the rest of the world will not. Wear it like armor and it can never be used to hurt you.
+
+A mind needs books like a sword needs a whetstone.
+
+I have a tender spot in my heart for cripples, bastards, and broken things.
+
+It’s hard to put a leash on a dog once you’ve put a crown on its head.
+
+The powerful have always preyed on the powerless, that's how they became powerful in the first place.
+'''
+if MAIN:
+    loss = gpt2_small(model_input_text,return_type = "loss")
+    print("Model Loss:", loss)
+# %%
+if MAIN:
+    logits: Tensor = gpt2_small(model_input_text, return_type = "logits")
+    prediction = logits.argmax(dim=-1).squeeze()[:-1]
+
+    true_tokens = gpt2_small.to_tokens(model_input_text).squeeze()[1:]
+    is_correct = (prediction == true_tokens)
+
+    print(f"Model accuracy: {is_correct.sum()}/{len(true_tokens)}")
+    print(f"Correct tokens: {gpt2_small.to_str_tokens(prediction[is_correct])}")
+
+# %%
+if MAIN: 
+    print(gpt2_small.to_str_tokens("Jon Snow, King in the North",prepend_bos = False))
+# %%
+if MAIN:
+    gpt2_text = "Natural Language Processing tasks, such as question answering, machine translation, reading comprehension, and summarization, are typically approached with supervised learning on taskspecific datasets."
+    gpt2_tokens = gpt2_small.to_tokens(gpt2_text)
+    gpt2_logits, gpt2_cache = gpt2_small.run_with_cache(gpt2_tokens,remove_batch_dim=1)
+# %%
+if MAIN:
+    attn_pattern_layer_0 = gpt2_cache["pattern",0]
+    print(attn_pattern_layer_0.shape)
+# %%
+if MAIN:
+    attn_pattern_layer_0_copy = gpt2_cache["blocks.0.attn.hook_pattern"]
+    torch.testing.assert_close(attn_pattern_layer_0,attn_pattern_layer_0_copy)
+# %%
