@@ -21,6 +21,8 @@ from transformer_lens import (
     HookedTransformerConfig,
     utils,
 )
+import plotly.express
+import plotly_utils
 from transformer_lens.hook_points import HookPoint
 import plotly.express as px
 
@@ -183,7 +185,6 @@ if MAIN:
     print("Heads attending to the previous token:"), ", ".join(prev_attn_detector(cache))
     print("Heads attending to the first token:"), ", ".join(first_attn_detector(cache))
 # %%
-from plotly_utils import plot_loss_difference 
 def generate_repeated_tokens(model: HookedTransformer, seq_len: int, batch: int = 1) -> Tensor:
     '''
     Generates a sequence of repeated random tokens
@@ -223,7 +224,7 @@ if MAIN:
     print(f"Performance on the first half: {log_probs[:seq_len].mean():.3f}")
     print(f"Performance on the second half: {log_probs[seq_len:].mean():.3f}")
 
-    plot_loss_difference(log_probs, seq_len)
+    plotly_utils.plot_loss_difference(log_probs, seq_len)
 # %%
 def induction_attn_detector(cache: ActivationCache) -> list[str]:
     '''
@@ -243,4 +244,80 @@ def induction_attn_detector(cache: ActivationCache) -> list[str]:
 
 if MAIN:
     print("Induction heads:"), ", ".join(induction_attn_detector(rep_cache))
+# %%
+seq_len = 50
+batch = 10
+rep_tokens_10 = generate_repeated_tokens(model, seq_len, batch)
+
+induction_score_store = torch.zeros((model.cfg.n_layers, model.cfg.n_heads),device=model.cfg.device)
+
+def induction_score_hook(
+    pattern: Tensor,
+    hook: HookPoint,
+):
+    '''
+    Calculates the induction score, and stores it in the  [layer, head] position of the `induction_score_store` tensor.
+    '''
+    induction_stripe = pattern.diagonal(dim1=-2,dim2=-1,offset=1-seq_len)
+    induction_score = einops.reduce(induction_stripe, "batch head_index position -> head_index", "mean")
+    induction_score_store[hook.layer(), :] = induction_score
+
+if MAIN:
+    model.run_with_hooks(
+        rep_tokens_10,
+        return_type = None,
+        fwd_hooks = [(lambda name: name.endswith("pattern"), induction_score_hook)]
+    )
+    plotly.express.imshow(
+        induction_score_store.cpu().numpy(),
+        labels={"x": "Head", "y": "Layer"},
+        title = "Induction Score by Head",
+        text_auto='.2f',
+        width=900, height=400
+    )
+# %%
+def visualize_pattern_hook(
+    pattern: Tensor,
+    hook: HookPoint,
+): 
+    print("Layer:", hook.layer())
+    display(
+        cv.attention.attention_patterns(
+            tokens=gpt2_small.to_str_tokens(rep_tokens[0]),
+            attention = pattern.mean(0)
+        )
+    )
+# %%
+seq_len = 50
+batch = 10
+rep_tokens_10 = generate_repeated_tokens(gpt2_small,seq_len,batch)
+
+induction_score_store = torch.zeros((gpt2_small.cfg.n_layers, gpt2_small.cfg.n_heads),device=gpt2_small.cfg.device)
+
+gpt2_small.run_with_hooks(
+    rep_tokens_10,
+    return_type = None,
+    fwd_hooks = [(
+        lambda name: name.endswith("pattern"),
+        induction_score_hook
+    )]
+)
+
+plotly.express.imshow(
+    induction_score_store.cpu().numpy(),
+    labels={"x": "Head", "y": "Layer"}, 
+    title="Induction Score by Head",
+    text_auto=".1f",
+    width=800
+)
+# %%
+if MAIN:
+    for induction_head_layer in [5,6,7]:
+        gpt2_small.run_with_hooks(
+            rep_tokens,
+            return_type = None,
+            fwd_hooks = [
+                (utils.get_act_name("pattern",induction_head_layer),visualize_pattern_hook)
+            ]
+        )
 # %%
