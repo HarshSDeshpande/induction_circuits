@@ -321,3 +321,47 @@ if MAIN:
             ]
         )
 # %%
+def logit_attribution(
+    embed: Tensor,
+    l1_results: Tensor,
+    l2_results: Tensor,
+    W_U: Tensor,
+    tokens: Tensor
+) -> Tensor:
+    '''
+    Inputs:
+        embed: the embeddings of the tokens (i.e. token + position embeddings)
+        l1_results: the outputs of the attention heads at layer 1 (with head as one of the dimensions)
+        l2_results: the outputs of the attention heads at layer 2 (with head as one of the dimensions)
+        W_U: the unembedding matrix
+        tokens: the token ids of the seequence
+
+    Returns:
+         Tensor of shape (seq_len-1, n_components)
+         represents the concatenations (along dim=-1) of logit attributions from:
+            - the direct path (seq-1,1)
+            - layer 0 logits (seq-1,n_heads)
+            - layer 1 logits (seq-1,n_heads)
+         so n_components = 1+2*n_heads
+    '''
+    W_U_correct_tokens = W_U[:,tokens[1:]]
+    direct_attributions = einops.einsum(W_U_correct_tokens,embed[:-1],"emb seq, seq emb -> seq")
+    l1_attributions = einops.einsum(W_U_correct_tokens,l1_results[:-1],"emb seq, seq nhead emb -> seq nhead")
+    l2_attributions = einops.einsum(W_U_correct_tokens,l2_results[:-1],"emb seq, seq nhead emb -> seq nhead")
+    return torch.concat([direct_attributions.unsqueeze(-1), l1_attributions, l2_attributions],dim=-1)
+# %%
+if MAIN:
+    text = "They say we die twice. Once when our breath leaves our body and once when the last person we know says our name."
+    logits, cache = model.run_with_cache(text, remove_batch_dim=True)
+    str_tokens = model.to_str_tokens(text)
+    tokens = model.to_tokens(text)
+
+    with torch.inference_mode():
+        embed = cache["embed"]
+        l1_results = cache["result",0]
+        l2_results = cache["result",1]
+        logit_attr = logit_attribution(embed,l1_results,l2_results,model.W_U,tokens[0])
+        correct_token_logits = logits[0, torch.arange(len(tokens[0])-1),tokens[0,1:]]
+        torch.testing.assert_close(logit_attr.sum(1),correct_token_logits,atol=1e-3,rtol=0)
+        print("Tests passed!")
+# %%
