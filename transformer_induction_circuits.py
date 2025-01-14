@@ -12,6 +12,8 @@ import torch.nn.functional as F
 from huggingface_hub import hf_hub_download
 from IPython.display import display
 from jaxtyping import Float, Int
+import matplotlib.pyplot as plt
+from typing import Callable
 from torch import Tensor
 from tqdm import tqdm 
 from transformer_lens import (
@@ -224,7 +226,6 @@ if MAIN:
     print(f"Performance on the first half: {log_probs[:seq_len].mean():.3f}")
     print(f"Performance on the second half: {log_probs[seq_len:].mean():.3f}")
 
-    plotly_utils.plot_loss_difference(log_probs, seq_len)
 # %%
 def induction_attn_detector(cache: ActivationCache) -> list[str]:
     '''
@@ -364,4 +365,52 @@ if MAIN:
         correct_token_logits = logits[0, torch.arange(len(tokens[0])-1),tokens[0,1:]]
         torch.testing.assert_close(logit_attr.sum(1),correct_token_logits,atol=1e-3,rtol=0)
         print("Tests passed!")
+# %%
+def get_log_probs(
+    logits: Tensor, tokens: Tensor
+) -> Tensor:
+    log_probs = logits.log_softmax(dim=-1)
+    log_probs_for_tokens = log_probs[:, :-1].gather(dim=-1, index=tokens[:, 1:].unsqueeze(-1)).squeeze(-1)
+
+    return log_probs_for_tokens
+# %%
+def head_zero_ablation_hook(
+    z: Tensor,
+    hook: HookPoint,
+    head_index_to_ablate: int,
+) -> None:
+    z[:,:,head_index_to_ablate,:] = 0.0
+
+def get_ablation_scores(
+    model: HookedTransformer,
+    tokens: Tensor,
+    ablation_function: Callable = head_zero_ablation_hook,
+) -> Tensor:
+    '''
+    Returns a tensor of shape (n_layers, n_heads) containing the increase in cross entropy loss from ablating the output of each head
+    '''
+    ablation_scores = torch.zeros((model.cfg.n_layers, model.cfg.n_heads),device=model.cfg.device)
+    model.reset_hooks()
+    seq_len = (tokens.shape[1] - 1)//2
+    logits = model(tokens,return_type="logits")
+    loss_no_ablation = -get_log_probs(logits, tokens)[:,-(seq_len-1):].mean()
+
+    for layer in tqdm(range(model.cfg.n_layers)):
+        for head in range(model.cfg.n_heads):
+            temp_hook_fn = functools.partial(ablation_function, head_index_to_ablate=head)
+            ablated_logits = model.run_with_hooks(tokens,fwd_hooks=[(utils.get_act_name("z",layer),temp_hook_fn)])
+            loss = -get_log_probs(ablated_logits.log_softmax(-1), tokens)[:, -(seq_len - 1) :].mean()
+            ablation_scores[layer, head] = loss - loss_no_ablation
+
+    return ablation_scores
+
+
+if MAIN:
+    ablation_scores = get_ablation_scores(model,rep_tokens)
+# %%
+if MAIN:
+    plt.imshow(
+        ablation_scores.cpu().numpy(),
+    )
+
 # %%
