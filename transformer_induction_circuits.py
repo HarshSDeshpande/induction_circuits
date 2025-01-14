@@ -414,3 +414,15 @@ if MAIN:
     )
 
 # %%
+def head_mean_ablation_hook(
+    z:Tensor,
+    hook: HookPoint,
+    head_index_to_ablate: int,
+) -> None:
+    z[:,:, head_index_to_ablate, :] = z[:, :, head_index_to_ablate,:].mean(0)
+
+if MAIN:
+    rep_tokens_batch = run_and_cache_model_repeated_tokens(model,seq_len=10,batch=50)[0]
+    mean_ablation_scores = get_ablation_scores(model,rep_tokens_batch,ablation_function=head_mean_ablation_hook)
+    plt.imshow(mean_ablation_scores.cpu().numpy())
+# %%
