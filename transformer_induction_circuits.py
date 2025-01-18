@@ -426,3 +426,73 @@ if MAIN:
     mean_ablation_scores = get_ablation_scores(model,rep_tokens_batch,ablation_function=head_mean_ablation_hook)
     plt.imshow(mean_ablation_scores.cpu().numpy())
 # %%
+def head_z_ablation_hook(
+    z: Tensor,
+    hook: HookPoint,
+    head_index_to_ablate: int,
+    seq_posns: list[int],
+    cache: ActivationCache,
+) -> None:
+    batch,seq = z.shape[:2]
+    v = cache["v", hook.layer()][:,:, head_index_to_ablate]
+    pattern = cache["pattern", hook.layer()][:,head_index_to_ablate]
+    v_repeated = einops.repeat(v,"b sK h -> b sQ sK h",sQ=seq)
+    v_ablated = einops.repeat(v_repeated.mean(0), "sQ sK h -> b sQ sK h",b=batch).clone()
+    for offset in seq_posns:
+        seqQ_slice = torch.arange(offset,seq)
+        v_ablated[:, seqQ_slice, seqQ_slice-offset] = v_repeated[:,seqQ_slice,seqQ_slice - offset]
+    
+    z[:, :, head_index_to_ablate] = einops.einsum(v_ablated, pattern,"b sQ sK h, bsQ sK -> b sQ h")
+# %%
+def get_ablation_scores_cache_assisted(
+        model: HookedTransformer,
+        tokens: Tensor,
+        ablation_function: Callable = head_zero_ablation_hook,
+        seq_posns: list[int] = [0],
+        layers: list[int] = [0],
+) -> Tensor:
+    ablation_scores = torch.zeros((len(layers), model.cfg.n_heads),device = model.cfg.device)
+    
+    model.reset_hooks()
+    seq_len = (tokens.shape[1] -1 )//2
+    logits, cache = model.run_with_cache(tokens,return_type="logits")
+    loss_no_ablation = -get_log_probs(logits,tokens)[:,-(seq_len-1):].mean()
+
+    for layer in layers:
+        for head in range(model.cfg.n_heads):
+            temp_hook_fn = functools.partial(
+                ablation_function, head_index_to_ablate=head, cache=cache,seq_posns=seq_posns,
+            )
+            ablated_logits = model.run_with_hooks(tokens, fwd_hooks=[(utils.get_act_name("z",layer),temp_hook_fn)])
+            loss = -get_log_probs(ablated_logits.log_softmax(-1),tokens)[:,-(seq_len-1):].mean()
+            ablation_scores[layer,head] = loss - loss_no_ablation
+
+    return ablation_scores
+# %%
+if MAIN:
+    rep_tokens_batch = run_and_cache_model_repeated_tokens(model,seq_len=50,batch=50)[0]
+
+    offsets = [[0],[1],[2],[3],[1,2],[1,2,3]]
+
+    z_ablation_scores = [
+        get_ablation_scores_cache_assisted(model,rep_tokens_batch,head_z_ablation_hook,offset).squeeze()
+        for offset in tqdm(offsets)
+    ]
+
+    plotly.express.imshow(
+        torch.stack(z_ablation_scores).cpu(),
+        labels={"x": "Head","y": "Position offset", "color": "Logit diff"},
+        title = "Loss Difference (ablating heads everywhere except for certain offset positions)",
+        text_auto=".2f",
+        y=[str(offset) for offset in offsets],
+        width = 900,
+        height=400,
+    )
+# %%
+# def generate_repeated_tokens_maxrep(
+#     model:HookedTransformer,
+#     seq_len:int,
+#     batch_size: int=1,
+#     maxrep:int =2,
+# ) -> Tensor:
+    
