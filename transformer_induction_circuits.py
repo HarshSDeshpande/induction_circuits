@@ -269,13 +269,14 @@ if MAIN:
         return_type = None,
         fwd_hooks = [(lambda name: name.endswith("pattern"), induction_score_hook)]
     )
-    plotly.express.imshow(
+    f0 = plotly.express.imshow(
         induction_score_store.cpu().numpy(),
         labels={"x": "Head", "y": "Layer"},
         title = "Induction Score by Head",
         text_auto='.2f',
         width=900, height=400
     )
+    f0.show()
 # %%
 def visualize_pattern_hook(
     pattern: Tensor,
@@ -304,13 +305,14 @@ gpt2_small.run_with_hooks(
     )]
 )
 
-plotly.express.imshow(
+f1 = plotly.express.imshow(
     induction_score_store.cpu().numpy(),
     labels={"x": "Head", "y": "Layer"}, 
     title="Induction Score by Head",
     text_auto=".1f",
     width=800
 )
+f1.show()
 # %%
 if MAIN:
     for induction_head_layer in [5,6,7]:
@@ -443,13 +445,14 @@ if MAIN:
     indices = torch.randint(0,model.cfg.d_vocab,(200,))
     full_OV_circuit_sample = full_OV_circuit[indices,indices].AB
 
-    plotly.express.imshow(
+    f3 = plotly.express.imshow(
         full_OV_circuit_sample.cpu().numpy(),
         labels={"x": "Logits on output token", "y": "Input token"},
         title = "Full OV circuit for copying head",
         width = 700,
         height=600,
     )
+    f3.show()
 # %%
 def top_1_acc(full_OV_circuit: FactoredMatrix, batch_size: int = 1000) -> float:
     """
@@ -485,11 +488,62 @@ if MAIN:
     pos_by_pos_pattern = torch.where(mask, pos_by_pos_scores / model.cfg.d_head**0.5, -1.0e6).softmax(-1)
 
     print(f"Avg lower-diagonal value: {pos_by_pos_pattern.diag(-1).mean():.4f}")
-    plotly.express.imshow(
+    f4 = plotly.express.imshow(
         utils.to_numpy(pos_by_pos_pattern[:200,:200]),
         labels={"x": "Key", "y": "Query"},
         title = "Attention patterns for prev-token QK circuit, first 100 indices",
         width = 700,
         height =600,
     )
+    f4.show()
+# %%
+def decompose_qk_input(cache: ActivationCache) -> Tensor:
+    y0 = cache["embed"].unsqueeze(0)
+    y1 = cache["pos_embed"].unsqueeze(0)
+    y_rest = cache["result",0].transpose(0,1)
+    return torch.concat([y0,y1,y_rest],dim=0)
+# %%
+def decompose_q(
+    decomposed_qk_input: Tensor,
+    ind_head_index: int,
+    model: HookedTransformer,
+) -> Tensor:
+    W_Q =  model.W_Q[1,ind_head_index]
+    return einops.einsum(decomposed_qk_input,W_Q,"n seq d_model, d_model d_head -> n seq d_head")
+# %%
+def decompose_k(
+    decomposed_qk_input: Tensor,
+    ind_head_index: int,
+    model: HookedTransformer,
+) -> Tensor:
+    W_K = model.W_K[1,ind_head_index]
+    return einops.einsum(decomposed_qk_input,W_K,"n seq d_model, d_model d_head -> n seq d_head")
+# %%
+if MAIN:
+    seq_len = 50
+    batch_size = 1
+    (rep_tokens, rep_logits, rep_cache) = run_and_cache_model_repeated_tokens(model,seq_len,batch_size)
+    rep_cache.remove_batch_dim()
+    
+    ind_head_index = 4
+
+    decomposed_qk_input = decompose_qk_input(rep_cache)
+    decomposed_q = decompose_q(decomposed_qk_input, ind_head_index, model)
+    decomposed_k = decompose_k(decomposed_qk_input,ind_head_index, model)
+    torch.testing.assert_close(decomposed_qk_input.sum(0),rep_cache["resid_pre",1]+rep_cache["pos_embed"],rtol=0.01,atol=1e-05)
+    torch.testing.assert_close(decomposed_q.sum(0),rep_cache["q",1][:,ind_head_index],rtol=0.01,atol=0.001)
+    torch.testing.assert_close(decomposed_k.sum(0),rep_cache["k",1][:, ind_head_index],rtol=0.01,atol=0.01)
+
+    component_labels = ["Embed", "PosEmbed"] + [f"0.{h}" for h in range(model.cfg.n_heads)]
+    for decomposed_input, name in [(decomposed_q, "query"),(decomposed_k,"key")]:
+        fig = plotly.express.imshow(
+            utils.to_numpy(decomposed_input.pow(2).sum([-1])),
+            labels={"x":"Position", "y": "Component"},
+            title = f"Norms of components of {name}",
+            y = component_labels,
+            width = 800,
+            height = 400,
+        )
+        fig.show()
+
 # %%
