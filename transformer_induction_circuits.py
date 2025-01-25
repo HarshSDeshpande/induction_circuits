@@ -472,3 +472,24 @@ if MAIN:
     W_V_both = einops.rearrange(model.W_V[1,[4,10]], "head d_model d_head -> d_model (head d_head)")
     W_OV_eff = W_E @ FactoredMatrix(W_V_both,W_O_both) @ W_U
     print(top_1_acc(W_OV_eff))
+# %%
+if MAIN:
+    layer = 0
+    head_index = 7
+
+    W_pos = model.W_pos
+    W_QK = model.W_Q[layer, head_index] @ model.W_K[layer, head_index].T
+    pos_by_pos_scores = W_pos @ W_QK @ W_pos.T
+
+    mask = torch.tril(torch.ones_like(pos_by_pos_scores)).bool()
+    pos_by_pos_pattern = torch.where(mask, pos_by_pos_scores / model.cfg.d_head**0.5, -1.0e6).softmax(-1)
+
+    print(f"Avg lower-diagonal value: {pos_by_pos_pattern.diag(-1).mean():.4f}")
+    plotly.express.imshow(
+        utils.to_numpy(pos_by_pos_pattern[:200,:200]),
+        labels={"x": "Key", "y": "Query"},
+        title = "Attention patterns for prev-token QK circuit, first 100 indices",
+        width = 700,
+        height =600,
+    )
+# %%
