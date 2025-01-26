@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 from typing import Callable
 from torch import Tensor
 from tqdm import tqdm 
+import seaborn as sns
 from transformer_lens import (
     ActivationCache,
     FactoredMatrix,
@@ -597,3 +598,88 @@ if MAIN:
     K_comp_circuit = find_K_comp_full_circuit(model, prev_token_head_index, ind_head_index)
     print(f"Fraction of tokens where the highest activating key is the same token: {top_1_acc(K_comp_circuit.T):.4f}")
 # %%
+def get_comp_score(W_A: Tensor, W_B: Tensor) -> float:
+    W_A_norm = W_A.pow(2).sum().sqrt()
+    W_B_norm = W_B.pow(2).sum().sqrt()
+    W_AB_norm = (W_A @ W_B).pow(2).sum().sqrt()
+    return (W_AB_norm / (W_A_norm*W_B_norm)).item()
+
+#%%
+def plot_comp_scores(model, scores, title):
+    plt.figure(figsize=(10, 8))
+    
+    # Create heatmap
+    sns.heatmap(
+        scores.cpu().detach(),
+        annot=True,
+        fmt='.3f',  # Changed to 3 decimal places for more precision in small values
+        cmap='YlOrRd',  # Yellow-Orange-Red colormap better for positive values
+        vmin=0,
+        vmax=0.1,
+        square=True,
+        cbar_kws={'label': 'Composition Score'}
+    )
+    
+    # Configure labels
+    plt.xlabel("Layer 1 Heads")
+    plt.ylabel("Layer 0 Heads")
+    plt.title(title)
+    
+    # Set ticks to show head numbers
+    n_heads = model.cfg.n_heads
+    plt.xticks(np.arange(n_heads) + 0.5, range(n_heads))
+    plt.yticks(np.arange(n_heads) + 0.5, range(n_heads))
+    
+    plt.tight_layout()
+    plt.show()
+# %%
+if MAIN:
+    W_QK = model.W_Q @ model.W_K.transpose(-1,-2)
+    W_OV = model.W_V @ model.W_O
+    composition_scores = {
+        "Q": torch.zeros(model.cfg.n_heads, model.cfg.n_heads).to(device),
+        "K": torch.zeros(model.cfg.n_heads, model.cfg.n_heads).to(device),
+        "V": torch.zeros(model.cfg.n_heads, model.cfg.n_heads).to(device),
+    }
+    
+    for i in tqdm(range(model.cfg.n_heads)):
+        for j in range(model.cfg.n_heads):
+            composition_scores["Q"][i,j] = get_comp_score(W_OV[0,i],W_QK[1,j])
+            composition_scores["K"][i,j] = get_comp_score(W_OV[0,i],W_QK[1,j].T)
+            composition_scores["V"][i,j] = get_comp_score(W_OV[0,i],W_QK[1,j])
+            
+    for comp_type in ["Q","K","V"]:
+        plot_comp_scores(model, composition_scores[comp_type], f"{comp_type} Composition Scores")
+# %%
+def generate_single_random_comp_score() -> float:
+    W_A_left = torch.empty(model.cfg.d_model, model.cfg.d_head)
+    W_B_left = torch.empty(model.cfg.d_model, model.cfg.d_head)
+    W_A_right = torch.empty(model.cfg.d_model, model.cfg.d_head)
+    W_B_right = torch.empty(model.cfg.d_model, model.cfg.d_head)
+
+    for W in [W_A_left, W_B_left, W_A_right, W_B_right]:
+        nn.init.kaiming_uniform_(W, a = np.sqrt(5))
+
+    W_A = W_A_left @ W_A_right.T
+    W_B = W_B_left @ W_B_right.T
+
+    return get_comp_score(W_A, W_B)
+# %%
+if MAIN:
+    n_samples = 300
+    comp_scores_baseline = np.zeros(n_samples)
+    for i in tqdm(range(n_samples)):
+        comp_scores_baseline[i] = generate_single_random_comp_score()
+
+    print("\n Mean:", comp_scores_baseline.mean())
+    print("Std:", comp_scores_baseline.std())
+    
+    plt.figure(figsize=(10, 6))
+    sns.histplot(
+        data=comp_scores_baseline, 
+        bins=50,
+        kde=True
+    )
+    plt.xlabel("Composition Score")
+    plt.title("Random Composition Scores")
+    plt.show()
