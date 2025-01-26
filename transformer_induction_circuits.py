@@ -547,3 +547,31 @@ if MAIN:
         fig.show()
 
 # %%
+def decompose_attn_scores(decomposed_q: torch.Tensor, decomposed_k: torch.Tensor) -> Tensor:
+    return einops.einsum(
+        decomposed_q,
+        decomposed_k,
+        "q_comp q_pos d_model, k_comp k_pos d_model -> q_comp k_comp q_pos k_pos",
+    )
+# %%
+if MAIN:
+    decomposed_scores = decompose_attn_scores(decomposed_q, decomposed_k)
+    decomposed_stds = einops.reduce(
+        decomposed_scores, "query_decomp key_decomp query_pos key_pos -> query_decomp key_decomp", torch.std
+    )
+
+    f10 = plotly.express.imshow(
+        utils.to_numpy(torch.tril(decomposed_scores[0,9])),
+        title = "Attention score contributions from query = embed, key = output of L0H7<br>(by query & key sequence positions)",
+        width = 700,
+    )
+    f10.show()
+
+    f11 = plotly.express.imshow(
+        utils.to_numpy(decomposed_stds),
+        labels={"x": "Key Compnent", "y": "Query Component"},
+        title = "Standard deviations of attn score contributions across sequence positions<br> (by query and key component)",
+        x = component_labels,
+        y = component_labels,
+        width = 700,
+    )
